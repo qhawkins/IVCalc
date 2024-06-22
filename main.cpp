@@ -105,35 +105,89 @@ double binomial_tree_american_option(double S, double K, double T, double r, dou
     return option_values[0][0];
 }
 
-double black_scholes_price(double S, double K, double T, double r, double sigma, const std::string& option_type) {
-    double d1 = (std::log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * std::sqrt(T));
-    double d2 = d1 - sigma * std::sqrt(T);
-    
-    if (option_type == "call") {
-        return S * std::erfc(-d1 / std::sqrt(2)) / 2 - K * std::exp(-r * T) * std::erfc(-d2 / std::sqrt(2)) / 2;
-    } else {
-        return K * std::exp(-r * T) * std::erfc(d2 / std::sqrt(2)) / 2 - S * std::erfc(d1 / std::sqrt(2)) / 2;
-    }
-}
+double implied_volatility(double S, double K, double T, double r, int N, const std::string& option_type, double market_price, double tol = 1e-6, int max_iter = 100) {
+    auto f = [&](double sigma) {
+        return binomial_tree_american_option(S, K, T, r, sigma, N, option_type) - market_price;
+    };
 
-double implied_volatility(double S, double K, double T, double r, int N, const std::string& option_type, double market_price, double tol = 1e-6, int max_iter = 50) {
-    double sigma = 0.5;  // Initial guess
-    for (int i = 0; i < max_iter; ++i) {
-        double price = binomial_tree_american_option(S, K, T, r, sigma, N, option_type);
-        double vega = (black_scholes_price(S, K, T, r, sigma + 0.01, option_type) - 
-                       black_scholes_price(S, K, T, r, sigma - 0.01, option_type)) / 0.02;
-        
-        double diff = price - market_price;
-        if (std::abs(diff) < tol) {
-            return sigma;
-        }
-        
-        sigma -= diff / vega;
-        if (sigma <= 0.0001 || sigma > 1000) {
-            return std::numeric_limits<double>::quiet_NaN();
-        }
+    double a = 0.0001, b = 10.0, c, d, e, min1, min2;
+    double fa = f(a), fb = f(b), fc, p, q, t, s, tol1, xm;  // Changed 'r' to 't'
+
+    if (fa * fb > 0) {
+        return std::numeric_limits<double>::quiet_NaN();
     }
-    
+
+    c = b;
+    fc = fb;
+
+    for (int iter = 0; iter < max_iter; iter++) {
+        if (fb * fc > 0) {
+            c = a;
+            fc = fa;
+            d = b - a;
+            e = d;
+        }
+
+        if (std::abs(fc) < std::abs(fb)) {
+            a = b;
+            b = c;
+            c = a;
+            fa = fb;
+            fb = fc;
+            fc = fa;
+        }
+
+        tol1 = 2 * std::numeric_limits<double>::epsilon() * std::abs(b) + 0.5 * tol;
+        xm = 0.5 * (c - b);
+
+        if (std::abs(xm) <= tol1 || fb == 0) {
+            return b;
+        }
+
+        if (std::abs(e) >= tol1 && std::abs(fa) > std::abs(fb)) {
+            s = fb / fa;
+            if (a == c) {
+                p = 2 * xm * s;
+                q = 1 - s;
+            } else {
+                q = fa / fc;
+                t = fb / fc;  // Using 't' instead of 'r'
+                p = s * (2 * xm * q * (q - t) - (b - a) * (t - 1));
+                q = (q - 1) * (t - 1) * (s - 1);
+            }
+
+            if (p > 0) {
+                q = -q;
+            }
+
+            p = std::abs(p);
+            min1 = 3 * xm * q - std::abs(tol1 * q);
+            min2 = std::abs(e * q);
+
+            if (2 * p < (min1 < min2 ? min1 : min2)) {
+                e = d;
+                d = p / q;
+            } else {
+                d = xm;
+                e = d;
+            }
+        } else {
+            d = xm;
+            e = d;
+        }
+
+        a = b;
+        fa = fb;
+
+        if (std::abs(d) > tol1) {
+            b += d;
+        } else {
+            b += (xm > 0 ? tol1 : -tol1);
+        }
+
+        fb = f(b);
+    }
+
     return std::numeric_limits<double>::quiet_NaN();
 }
 
