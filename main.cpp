@@ -105,15 +105,17 @@ double binomial_tree_american_option(double S, double K, double T, double r, dou
     return option_values[0][0];
 }
 
-double implied_volatility(double S, double K, double T, double r, int N, const std::string& option_type, double market_price, double tol = 1e-6, int max_iter = 100) {
+double implied_volatility(double S, double K, double T, double r, int N, const std::string& option_type, double market_price, double tol = 1e-6, int max_iter = 1000) {
     auto f = [&](double sigma) {
         return binomial_tree_american_option(S, K, T, r, sigma, N, option_type) - market_price;
     };
 
-    double a = 0.0001, b = 10.0, c, d, e, min1, min2;
+    double a = 0.0001, b = 1000000.0, c, d, e, min1, min2;
     double fa = f(a), fb = f(b), fc, p, q, t, s, tol1, xm;  // Changed 'r' to 't'
 
     if (fa * fb > 0) {
+            std::cout << "failed to converge with inputs: " << S << ", " << K << ", " << T << ", " << r << ", " << N << ", " << option_type << ", " << market_price << "iv: " << b << std::endl;
+            exit(1);
         return std::numeric_limits<double>::quiet_NaN();
     }
 
@@ -187,7 +189,8 @@ double implied_volatility(double S, double K, double T, double r, int N, const s
 
         fb = f(b);
     }
-
+    std::cout << "failed to converge with inputs: " << S << ", " << K << ", " << T << ", " << r << ", " << N << ", " << option_type << ", " << market_price << "iv: " << b << std::endl;
+    exit(1);
     return std::numeric_limits<double>::quiet_NaN();
 }
 
@@ -274,8 +277,11 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
     auto start_time = std::chrono::steady_clock::now();
     std::atomic<size_t> completed_calculations(0);
     std::atomic<bool> calculation_complete(false);
+    std::atomic<size_t> nan_count(0);
     size_t total_calculations = options.size();
     const size_t BATCH_SIZE = 1000;  // Adjust based on your system
+
+    std::mutex cout_mutex;
 
     // Start a thread to print progress
     std::thread progress_thread([&]() {
@@ -292,10 +298,12 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
             size_t calculations_left = total_calculations - current_completed;
             double estimated_time_left = calculations_per_second > 0 ? calculations_left / calculations_per_second : 0;
             
+            std::lock_guard<std::mutex> lock(cout_mutex);
             std::cout << "Calculations per second: " << std::fixed << std::setprecision(2) << calculations_per_second
                       << " | Completed: " << current_completed << "/" << total_calculations
                       << " | Left: " << calculations_left
-                      << " | Estimated time left: " << std::setprecision(1) << estimated_time_left << " seconds" 
+                      << " | Estimated time left: " << std::setprecision(1) << estimated_time_left << " seconds"
+                      << " | NaN count: " << nan_count.load()
                       << std::endl;
         }
     });
@@ -305,14 +313,25 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
     for (size_t i = 0; i < options.size(); i += BATCH_SIZE) {
         size_t end = std::min(i + BATCH_SIZE, options.size());
         futures.push_back(pool.enqueue([&, i, end]() {
+            size_t local_nan_count = 0;
             for (size_t j = i; j < end; ++j) {
                 const auto& option = options[j];
-                implied_vols[j] = implied_volatility(
+                double iv = implied_volatility(
                     option.underlying_price, option.strike_price, option.years_to_expiration,
                     r, N, option.option_type, option.market_price
                 );
+                implied_vols[j] = iv;
+                if (std::isnan(iv)) {
+                    local_nan_count++;
+                }
                 completed_calculations.fetch_add(1, std::memory_order_relaxed);
             }
+            nan_count.fetch_add(local_nan_count, std::memory_order_relaxed);
+            
+            std::lock_guard<std::mutex> lock(cout_mutex);
+            std::cout << "Batch completed: " << i << " to " << end - 1 
+                      << " | NaN count in this batch: " << local_nan_count 
+                      << " | Total NaN count: " << nan_count.load() << std::endl;
         }));
     }
 
@@ -333,6 +352,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
     std::cout << "Total time: " << std::fixed << std::setprecision(2) << seconds << " seconds" << std::endl;
     std::cout << "Number of calculations: " << total_calculations << std::endl;
     std::cout << "Overall calculations per second: " << std::setprecision(2) << overall_calculations_per_second << std::endl;
+    std::cout << "Total NaN count: " << nan_count.load() << std::endl;
 
     write_to_csv(output_filename, options, implied_vols);
 }
