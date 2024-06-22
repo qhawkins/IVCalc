@@ -6,6 +6,62 @@
 #include <fstream>
 #include <sstream>
 #include <iomanip>
+#include <thread>
+#include <future>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <functional>
+
+class ThreadPool {
+public:
+    ThreadPool(size_t num_threads) : stop(false) {
+        for(size_t i = 0; i < num_threads; ++i)
+            workers.emplace_back([this] {
+                while(true) {
+                    std::function<void()> task;
+                    {
+                        std::unique_lock<std::mutex> lock(this->queue_mutex);
+                        this->condition.wait(lock, [this]{ return this->stop || !this->tasks.empty(); });
+                        if(this->stop && this->tasks.empty()) return;
+                        task = std::move(this->tasks.front());
+                        this->tasks.pop();
+                    }
+                    task();
+                }
+            });
+    }
+
+    template<class F>
+    auto enqueue(F&& f) -> std::future<typename std::result_of<F()>::type> {
+        using return_type = typename std::result_of<F()>::type;
+        auto task = std::make_shared<std::packaged_task<return_type()>>(std::forward<F>(f));
+        std::future<return_type> res = task->get_future();
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            tasks.emplace([task](){ (*task)(); });
+        }
+        condition.notify_one();
+        return res;
+    }
+
+    ~ThreadPool() {
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            stop = true;
+        }
+        condition.notify_all();
+        for(std::thread &worker: workers)
+            worker.join();
+    }
+
+private:
+    std::vector<std::thread> workers;
+    std::queue<std::function<void()>> tasks;
+    std::mutex queue_mutex;
+    std::condition_variable condition;
+    bool stop;
+};
 
 double binomial_tree_american_option(double S, double K, double T, double r, double sigma, int N, const std::string& option_type) {
     double dt = T / N;
@@ -44,7 +100,7 @@ double binomial_tree_american_option(double S, double K, double T, double r, dou
 }
 
 double implied_volatility(double S, double K, double T, double r, int N, const std::string& option_type, double market_price, double tol = 1e-6, int max_iter = 100) {
-    double sigma_low = 0.001, sigma_high = 100;
+    double sigma_low = 0.01, sigma_high = 100;
     for (int i = 0; i < max_iter; ++i) {
         double sigma = (sigma_low + sigma_high) / 2;
         double option_price = binomial_tree_american_option(S, K, T, r, sigma, N, option_type);
@@ -110,25 +166,6 @@ std::vector<OptionData> read_csv(const std::string& filename) {
     return options;
 }
 
-void calculate_implied_volatilities(const std::string& filename, double r, int N) {
-    std::vector<OptionData> options = read_csv(filename);
-    
-    std::cout << "Implied Volatilities:" << std::endl;
-    for (const auto& option : options) {
-        double implied_vol = implied_volatility(
-            option.underlying_price, option.strike_price, option.years_to_expiration,
-            r, N, option.option_type, option.market_price
-        );
-        
-        std::cout << "Contract: " << option.option_type 
-                  << ", Strike: " << option.strike_price
-                  << ", Underlying: " << option.underlying_price
-                  << ", Time to Expiry: " << option.years_to_expiration
-                  << ", Market Price: " << option.market_price
-                  << ", Implied Volatility: " << implied_vol << std::endl;
-    }
-}
-
 void write_to_csv(const std::string& filename, const std::vector<OptionData>& options, const std::vector<double>& implied_vols) {
     std::ofstream outfile(filename);
     if (!outfile.is_open()) {
@@ -154,19 +191,36 @@ void write_to_csv(const std::string& filename, const std::vector<OptionData>& op
     std::cout << "Results written to " << filename << std::endl;
 }
 
-
 void calculate_implied_volatilities(const std::string& input_filename, const std::string& output_filename, double r, int N) {
     std::vector<OptionData> options = read_csv(input_filename);
-    std::vector<double> implied_vols;
+    std::vector<std::pair<size_t, std::future<double>>> implied_vol_futures;
     
+    // Create a thread pool with the number of hardware threads available
+    ThreadPool pool(std::thread::hardware_concurrency());
+
     std::cout << "Calculating Implied Volatilities..." << std::endl;
-    for (const auto& option : options) {
-        double implied_vol = implied_volatility(
-            option.underlying_price, option.strike_price, option.years_to_expiration,
-            r, N, option.option_type, option.market_price
+    for (size_t i = 0; i < options.size(); ++i) {
+        const auto& option = options[i];
+        implied_vol_futures.emplace_back(i, 
+            pool.enqueue([&option, r, N]() {
+                return implied_volatility(
+                    option.underlying_price, option.strike_price, option.years_to_expiration,
+                    r, N, option.option_type, option.market_price
+                );
+            })
         );
+    }
+
+    // Sort the futures based on their original index
+    std::sort(implied_vol_futures.begin(), implied_vol_futures.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    std::vector<double> implied_vols;
+    for (size_t i = 0; i < options.size(); ++i) {
+        double implied_vol = implied_vol_futures[i].second.get();
         implied_vols.push_back(implied_vol);
         
+        const auto& option = options[i];
         std::cout << "Contract: " << option.option_type 
                   << ", Strike: " << option.strike_price
                   << ", Underlying: " << option.underlying_price
@@ -181,7 +235,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
 int main() {
     std::string input_filename = "/home/qhawkins/Desktop/GMEStudy/timed_opra_clean.csv";
     std::string output_filename = "/home/qhawkins/Desktop/GMEStudy/implied_volatilities.csv";
-    double r = 0.0425;    // Risk-free interest rate
+    double r = 0.05;    // Risk-free interest rate
     int N = 100;        // Number of time steps
 
     calculate_implied_volatilities(input_filename, output_filename, r, N);
