@@ -181,7 +181,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
 int main() {
     std::string input_filename = "/home/qhawkins/Desktop/GMEStudy/timed_opra_clean.csv";
     std::string output_filename = "/home/qhawkins/Desktop/GMEStudy/implied_volatilities.csv";
-    double r = 0.05;    // Risk-free interest rate
+    double r = 0.0425;    // Risk-free interest rate
     int N = 100;        // Number of time steps
 
     calculate_implied_volatilities(input_filename, output_filename, r, N);
