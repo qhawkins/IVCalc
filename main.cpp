@@ -12,6 +12,8 @@
 #include <condition_variable>
 #include <queue>
 #include <functional>
+#include <chrono>
+#include <atomic>
 
 class ThreadPool {
 public:
@@ -193,41 +195,64 @@ void write_to_csv(const std::string& filename, const std::vector<OptionData>& op
 
 void calculate_implied_volatilities(const std::string& input_filename, const std::string& output_filename, double r, int N) {
     std::vector<OptionData> options = read_csv(input_filename);
-    std::vector<std::pair<size_t, std::future<double>>> implied_vol_futures;
+    std::vector<std::future<double>> implied_vol_futures;
     
     // Create a thread pool with the number of hardware threads available
     ThreadPool pool(std::thread::hardware_concurrency());
 
     std::cout << "Calculating Implied Volatilities..." << std::endl;
-    for (size_t i = 0; i < options.size(); ++i) {
-        const auto& option = options[i];
-        implied_vol_futures.emplace_back(i, 
-            pool.enqueue([&option, r, N]() {
-                return implied_volatility(
+    
+    auto start_time = std::chrono::high_resolution_clock::now();
+    std::atomic<size_t> completed_calculations(0);
+    std::atomic<bool> calculation_complete(false);
+
+    // Start a thread to print calculations per second
+    std::thread progress_thread([&]() {
+        auto last_print_time = start_time;
+        size_t last_completed = 0;
+        while (!calculation_complete) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+            auto current_time = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_print_time);
+            size_t current_completed = completed_calculations.load();
+            double calculations_per_second = (current_completed - last_completed) / (duration.count() / 1000.0);
+            std::cout << "Calculations per second: " << calculations_per_second << std::endl;
+            last_print_time = current_time;
+            last_completed = current_completed;
+        }
+    });
+
+    for (const auto& option : options) {
+        implied_vol_futures.emplace_back(
+            pool.enqueue([&option, r, N, &completed_calculations]() {
+                double result = implied_volatility(
                     option.underlying_price, option.strike_price, option.years_to_expiration,
                     r, N, option.option_type, option.market_price
                 );
+                completed_calculations++;
+                return result;
             })
         );
     }
 
-    // Sort the futures based on their original index
-    std::sort(implied_vol_futures.begin(), implied_vol_futures.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
-
     std::vector<double> implied_vols;
-    for (size_t i = 0; i < options.size(); ++i) {
-        double implied_vol = implied_vol_futures[i].second.get();
-        implied_vols.push_back(implied_vol);
-        
-        const auto& option = options[i];
-        std::cout << "Contract: " << option.option_type 
-                  << ", Strike: " << option.strike_price
-                  << ", Underlying: " << option.underlying_price
-                  << ", Time to Expiry: " << option.years_to_expiration
-                  << ", Market Price: " << option.market_price
-                  << ", Implied Volatility: " << implied_vol << std::endl;
+    for (auto& future : implied_vol_futures) {
+        implied_vols.push_back(future.get());
     }
+
+    calculation_complete = true;
+    progress_thread.join();
+
+    auto end_time = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    
+    double seconds = duration.count() / 1000.0;
+    double overall_calculations_per_second = options.size() / seconds;
+
+    std::cout << "Calculations completed." << std::endl;
+    std::cout << "Total time: " << seconds << " seconds" << std::endl;
+    std::cout << "Number of calculations: " << options.size() << std::endl;
+    std::cout << "Overall calculations per second: " << overall_calculations_per_second << std::endl;
 
     write_to_csv(output_filename, options, implied_vols);
 }
