@@ -16,6 +16,7 @@
 #include <atomic>
 #include <array>
 #include <limits>
+#include <random>
 
 class ThreadPool {
 public:
@@ -105,18 +106,18 @@ double binomial_tree_american_option(double S, double K, double T, double r, dou
     return option_values[0][0];
 }
 
-double implied_volatility(double S, double K, double T, double r, int N, const std::string& option_type, double market_price, double tol = 1e-6, int max_iter = 1000) {
+double implied_volatility(double S, double K, double T, double r, int N, const std::string& option_type, double market_price, double tol = 1e-6, int max_iter = 100) {
     auto f = [&](double sigma) {
         return binomial_tree_american_option(S, K, T, r, sigma, N, option_type) - market_price;
     };
 
-    double a = 0.0001, b = 1000000.0, c, d, e, min1, min2;
-    double fa = f(a), fb = f(b), fc, p, q, t, s, tol1, xm;  // Changed 'r' to 't'
+    double a = 0.0001;  // Lower bound
+    double b = 5.0;     // Upper bound (changed from 10.0 to 5.0)
+    double c, d, e, min1, min2;
+    double fa = f(a), fb = f(b), fc, p, q, t, s, tol1, xm;
 
     if (fa * fb > 0) {
-            std::cout << "failed to converge with inputs: " << S << ", " << K << ", " << T << ", " << r << ", " << N << ", " << option_type << ", " << market_price << "iv: " << b << std::endl;
-            exit(1);
-        return std::numeric_limits<double>::quiet_NaN();
+        return -1;  // Root not bracketed
     }
 
     c = b;
@@ -153,7 +154,7 @@ double implied_volatility(double S, double K, double T, double r, int N, const s
                 q = 1 - s;
             } else {
                 q = fa / fc;
-                t = fb / fc;  // Using 't' instead of 'r'
+                t = fb / fc;
                 p = s * (2 * xm * q * (q - t) - (b - a) * (t - 1));
                 q = (q - 1) * (t - 1) * (s - 1);
             }
@@ -189,9 +190,8 @@ double implied_volatility(double S, double K, double T, double r, int N, const s
 
         fb = f(b);
     }
-    std::cout << "failed to converge with inputs: " << S << ", " << K << ", " << T << ", " << r << ", " << N << ", " << option_type << ", " << market_price << "iv: " << b << std::endl;
-    exit(1);
-    return std::numeric_limits<double>::quiet_NaN();
+
+    return -2;  // Max iterations reached
 }
 
 struct OptionData {
@@ -278,6 +278,8 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
     std::atomic<size_t> completed_calculations(0);
     std::atomic<bool> calculation_complete(false);
     std::atomic<size_t> nan_count(0);
+    std::atomic<size_t> root_not_bracketed_count(0);
+    std::atomic<size_t> max_iterations_reached_count(0);
     size_t total_calculations = options.size();
     const size_t BATCH_SIZE = 1000;  // Adjust based on your system
 
@@ -304,34 +306,75 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
                       << " | Left: " << calculations_left
                       << " | Estimated time left: " << std::setprecision(1) << estimated_time_left << " seconds"
                       << " | NaN count: " << nan_count.load()
+                      << " | Root not bracketed: " << root_not_bracketed_count.load()
+                      << " | Max iterations reached: " << max_iterations_reached_count.load()
                       << std::endl;
         }
     });
 
     std::vector<std::future<void>> futures;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, options.size() - 1);
 
     for (size_t i = 0; i < options.size(); i += BATCH_SIZE) {
         size_t end = std::min(i + BATCH_SIZE, options.size());
         futures.push_back(pool.enqueue([&, i, end]() {
             size_t local_nan_count = 0;
+            size_t local_root_not_bracketed_count = 0;
+            size_t local_max_iterations_reached_count = 0;
+            double sum_iv = 0.0;
+            size_t valid_iv_count = 0;
+
             for (size_t j = i; j < end; ++j) {
                 const auto& option = options[j];
                 double iv = implied_volatility(
                     option.underlying_price, option.strike_price, option.years_to_expiration,
                     r, N, option.option_type, option.market_price
                 );
-                implied_vols[j] = iv;
-                if (std::isnan(iv)) {
+
+                // Print detailed information for a random sample of options
+                if (j == dis(gen)) {
+                    std::lock_guard<std::mutex> lock(cout_mutex);
+                    std::cout << "Detailed info for option " << j << ":\n"
+                              << "  Underlying: " << option.underlying_price
+                              << ", Strike: " << option.strike_price
+                              << ", Time to expiry: " << option.years_to_expiration
+                              << ", Market price: " << option.market_price
+                              << ", Option type: " << option.option_type
+                              << ", Calculated IV: " << iv << std::endl;
+                }
+
+                if (iv == -1) {
+                    local_root_not_bracketed_count++;
+                    implied_vols[j] = std::numeric_limits<double>::quiet_NaN();
+                } else if (iv == -2) {
+                    local_max_iterations_reached_count++;
+                    implied_vols[j] = std::numeric_limits<double>::quiet_NaN();
+                } else if (std::isnan(iv)) {
                     local_nan_count++;
+                    implied_vols[j] = std::numeric_limits<double>::quiet_NaN();
+                } else {
+                    implied_vols[j] = iv;
+                    sum_iv += iv;
+                    valid_iv_count++;
                 }
                 completed_calculations.fetch_add(1, std::memory_order_relaxed);
             }
+
             nan_count.fetch_add(local_nan_count, std::memory_order_relaxed);
+            root_not_bracketed_count.fetch_add(local_root_not_bracketed_count, std::memory_order_relaxed);
+            max_iterations_reached_count.fetch_add(local_max_iterations_reached_count, std::memory_order_relaxed);
             
+            double avg_iv = valid_iv_count > 0 ? sum_iv / valid_iv_count : 0.0;
+
             std::lock_guard<std::mutex> lock(cout_mutex);
             std::cout << "Batch completed: " << i << " to " << end - 1 
                       << " | NaN count in this batch: " << local_nan_count 
-                      << " | Total NaN count: " << nan_count.load() << std::endl;
+                      << " | Root not bracketed in this batch: " << local_root_not_bracketed_count
+                      << " | Max iterations reached in this batch: " << local_max_iterations_reached_count
+                      << " | Average IV in this batch: " << std::fixed << std::setprecision(4) << avg_iv
+                      << std::endl;
         }));
     }
 
@@ -348,11 +391,25 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
     double seconds = duration.count() / 1000.0;
     double overall_calculations_per_second = total_calculations / seconds;
 
+    // Calculate overall average IV
+    double sum_iv = 0.0;
+    size_t valid_iv_count = 0;
+    for (double iv : implied_vols) {
+        if (!std::isnan(iv)) {
+            sum_iv += iv;
+            valid_iv_count++;
+        }
+    }
+    double overall_avg_iv = valid_iv_count > 0 ? sum_iv / valid_iv_count : 0.0;
+
     std::cout << "\nCalculations completed." << std::endl;
     std::cout << "Total time: " << std::fixed << std::setprecision(2) << seconds << " seconds" << std::endl;
     std::cout << "Number of calculations: " << total_calculations << std::endl;
     std::cout << "Overall calculations per second: " << std::setprecision(2) << overall_calculations_per_second << std::endl;
     std::cout << "Total NaN count: " << nan_count.load() << std::endl;
+    std::cout << "Total root not bracketed count: " << root_not_bracketed_count.load() << std::endl;
+    std::cout << "Total max iterations reached count: " << max_iterations_reached_count.load() << std::endl;
+    std::cout << "Overall average IV: " << std::fixed << std::setprecision(4) << overall_avg_iv << std::endl;
 
     write_to_csv(output_filename, options, implied_vols);
 }
