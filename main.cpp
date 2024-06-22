@@ -111,63 +111,65 @@ double implied_volatility(double S, double K, double T, double r, int N, const s
         return binomial_tree_american_option(S, K, T, r, sigma, N, option_type) - market_price;
     };
 
-    double a = 0.0001;  // Lower bound
-    double b = 5.0;     // Upper bound (changed from 10.0 to 5.0)
-    double c, d, e, min1, min2;
-    double fa = f(a), fb = f(b), fc, p, q, t, s, tol1, xm;
+    // Initial guess
+    double a = 0.00001;
+    double b = 10.0;
+    double fa = f(a);
+    double fb = f(b);
 
-    if (fa * fb > 0) {
-        return -1;  // Root not bracketed
+    // If not bracketed, expand the interval
+    int bracket_attempts = 0;
+    while (fa * fb > 0 && bracket_attempts < 50) {
+        if (std::abs(fa) < std::abs(fb)) {
+            a -= (b - a);
+            fa = f(a);
+        } else {
+            b += (b - a);
+            fb = f(b);
+        }
+        bracket_attempts++;
     }
 
-    c = b;
-    fc = fb;
+    if (fa * fb > 0) {
+        return -1;  // Root not bracketed after attempts
+    }
+
+    double c = b, fc = fb;
+    double d, e;
 
     for (int iter = 0; iter < max_iter; iter++) {
-        if (fb * fc > 0) {
-            c = a;
-            fc = fa;
-            d = b - a;
-            e = d;
+        if ((fb > 0 && fc > 0) || (fb < 0 && fc < 0)) {
+            c = a; fc = fa;
+            d = b - a; e = d;
         }
-
         if (std::abs(fc) < std::abs(fb)) {
-            a = b;
-            b = c;
-            c = a;
-            fa = fb;
-            fb = fc;
-            fc = fa;
+            a = b; b = c; c = a;
+            fa = fb; fb = fc; fc = fa;
         }
 
-        tol1 = 2 * std::numeric_limits<double>::epsilon() * std::abs(b) + 0.5 * tol;
-        xm = 0.5 * (c - b);
-
+        double tol1 = 2 * std::numeric_limits<double>::epsilon() * std::abs(b) + 0.5 * tol;
+        double xm = 0.5 * (c - b);
+        
         if (std::abs(xm) <= tol1 || fb == 0) {
-            return b;
+            return b;  // Found a solution
         }
-
+        
         if (std::abs(e) >= tol1 && std::abs(fa) > std::abs(fb)) {
-            s = fb / fa;
+            double s = fb / fa;
+            double p, q;
             if (a == c) {
                 p = 2 * xm * s;
                 q = 1 - s;
             } else {
                 q = fa / fc;
-                t = fb / fc;
-                p = s * (2 * xm * q * (q - t) - (b - a) * (t - 1));
-                q = (q - 1) * (t - 1) * (s - 1);
+                double r = fb / fc;
+                p = s * (2 * xm * q * (q - r) - (b - a) * (r - 1));
+                q = (q - 1) * (r - 1) * (s - 1);
             }
-
-            if (p > 0) {
-                q = -q;
-            }
-
+            if (p > 0) q = -q;
             p = std::abs(p);
-            min1 = 3 * xm * q - std::abs(tol1 * q);
-            min2 = std::abs(e * q);
-
-            if (2 * p < (min1 < min2 ? min1 : min2)) {
+            
+            if (2 * p < std::min(3 * xm * q - std::abs(tol1 * q), std::abs(e * q))) {
                 e = d;
                 d = p / q;
             } else {
@@ -181,13 +183,7 @@ double implied_volatility(double S, double K, double T, double r, int N, const s
 
         a = b;
         fa = fb;
-
-        if (std::abs(d) > tol1) {
-            b += d;
-        } else {
-            b += (xm > 0 ? tol1 : -tol1);
-        }
-
+        b += (std::abs(d) > tol1) ? d : (xm > 0 ? tol1 : -tol1);
         fb = f(b);
     }
 
@@ -328,6 +324,37 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
 
             for (size_t j = i; j < end; ++j) {
                 const auto& option = options[j];
+                
+                // Data sanity checks
+                if (option.market_price <= 0 || option.strike_price <= 0 || 
+                    option.underlying_price <= 0 || option.years_to_expiration <= 0) {
+                    std::lock_guard<std::mutex> lock(cout_mutex);
+                    std::cerr << "Invalid option data for index " << j << std::endl;
+                    std::cout << "  Market price: " << option.market_price
+                              << ", Strike price: " << option.strike_price
+                              << ", Underlying price: " << option.underlying_price
+                              << ", Years to expiration: " << option.years_to_expiration
+                              << ", Option type: " << option.option_type << std::endl;
+                    exit(1);
+                    local_nan_count++;
+                    implied_vols[j] = std::numeric_limits<double>::quiet_NaN();
+                    continue;
+                }
+
+                // Handle edge cases
+                if (option.market_price < 0.01) {
+                    implied_vols[j] = 0.01;
+                    sum_iv += 0.01;
+                    valid_iv_count++;
+                    continue;
+                }
+                if (option.option_type == "call" && option.market_price > option.underlying_price) {
+                    implied_vols[j] = 5.0;
+                    sum_iv += 5.0;
+                    valid_iv_count++;
+                    continue;
+                }
+
                 double iv = implied_volatility(
                     option.underlying_price, option.strike_price, option.years_to_expiration,
                     r, N, option.option_type, option.market_price
@@ -346,6 +373,13 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
                 }
 
                 if (iv == -1) {
+                    std::lock_guard<std::mutex> lock(cout_mutex);
+                    std::cout << "Root not bracketed for option " << j << ":\n"
+                              << "  Underlying: " << option.underlying_price
+                              << ", Strike: " << option.strike_price
+                              << ", Time to expiry: " << option.years_to_expiration
+                              << ", Market price: " << option.market_price
+                              << ", Option type: " << option.option_type << std::endl;
                     local_root_not_bracketed_count++;
                     implied_vols[j] = std::numeric_limits<double>::quiet_NaN();
                 } else if (iv == -2) {
