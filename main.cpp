@@ -202,22 +202,33 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
 
     std::cout << "Calculating Implied Volatilities..." << std::endl;
     
-    auto start_time = std::chrono::high_resolution_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
     std::atomic<size_t> completed_calculations(0);
     std::atomic<bool> calculation_complete(false);
+    size_t total_calculations = options.size();
 
-    // Start a thread to print calculations per second
+    // Start a thread to print progress
     std::thread progress_thread([&]() {
-        auto last_print_time = start_time;
+        auto next_print_time = start_time;
         size_t last_completed = 0;
         while (!calculation_complete) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            auto current_time = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_print_time);
+            next_print_time += std::chrono::seconds(1);
+            std::this_thread::sleep_until(next_print_time);
+            
+            auto current_time = std::chrono::steady_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
             size_t current_completed = completed_calculations.load();
-            double calculations_per_second = (current_completed - last_completed) / (duration.count() / 1000.0);
-            std::cout << "Calculations per second: " << calculations_per_second << std::endl;
-            last_print_time = current_time;
+            double calculations_per_second = current_completed / (duration.count() / 1000.0);
+            
+            size_t calculations_left = total_calculations - current_completed;
+            double estimated_time_left = calculations_per_second > 0 ? calculations_left / calculations_per_second : 0;
+            
+            std::cout << "Calculations per second: " << std::fixed << std::setprecision(2) << calculations_per_second
+                      << " | Completed: " << current_completed << "/" << total_calculations
+                      << " | Left: " << calculations_left
+                      << " | Estimated time left: " << std::setprecision(1) << estimated_time_left << " seconds" 
+                      << std::endl;
+            
             last_completed = current_completed;
         }
     });
@@ -243,16 +254,16 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
     calculation_complete = true;
     progress_thread.join();
 
-    auto end_time = std::chrono::high_resolution_clock::now();
+    auto end_time = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     
     double seconds = duration.count() / 1000.0;
-    double overall_calculations_per_second = options.size() / seconds;
+    double overall_calculations_per_second = total_calculations / seconds;
 
-    std::cout << "Calculations completed." << std::endl;
-    std::cout << "Total time: " << seconds << " seconds" << std::endl;
-    std::cout << "Number of calculations: " << options.size() << std::endl;
-    std::cout << "Overall calculations per second: " << overall_calculations_per_second << std::endl;
+    std::cout << "\nCalculations completed." << std::endl;
+    std::cout << "Total time: " << std::fixed << std::setprecision(2) << seconds << " seconds" << std::endl;
+    std::cout << "Number of calculations: " << total_calculations << std::endl;
+    std::cout << "Overall calculations per second: " << std::setprecision(2) << overall_calculations_per_second << std::endl;
 
     write_to_csv(output_filename, options, implied_vols);
 }
