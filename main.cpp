@@ -14,6 +14,8 @@
 #include <functional>
 #include <chrono>
 #include <atomic>
+#include <array>
+#include <limits>
 
 class ThreadPool {
 public:
@@ -65,13 +67,15 @@ private:
     bool stop;
 };
 
+constexpr int MAX_N = 100;  // Maximum number of time steps
+
 double binomial_tree_american_option(double S, double K, double T, double r, double sigma, int N, const std::string& option_type) {
     double dt = T / N;
     double u = std::exp(sigma * std::sqrt(dt));
     double d = 1 / u;
     double p = (std::exp(r * dt) - d) / (u - d);
     
-    std::vector<std::vector<double>> option_values(N + 1, std::vector<double>(N + 1, 0.0));
+    std::array<std::array<double, MAX_N + 1>, MAX_N + 1> option_values;
 
     // Initialize option values at maturity
     for (int i = 0; i <= N; ++i) {
@@ -101,22 +105,36 @@ double binomial_tree_american_option(double S, double K, double T, double r, dou
     return option_values[0][0];
 }
 
-double implied_volatility(double S, double K, double T, double r, int N, const std::string& option_type, double market_price, double tol = 1e-6, int max_iter = 100) {
-    double sigma_low = 0.01, sigma_high = 100;
+double black_scholes_price(double S, double K, double T, double r, double sigma, const std::string& option_type) {
+    double d1 = (std::log(S / K) + (r + 0.5 * sigma * sigma) * T) / (sigma * std::sqrt(T));
+    double d2 = d1 - sigma * std::sqrt(T);
+    
+    if (option_type == "call") {
+        return S * std::erfc(-d1 / std::sqrt(2)) / 2 - K * std::exp(-r * T) * std::erfc(-d2 / std::sqrt(2)) / 2;
+    } else {
+        return K * std::exp(-r * T) * std::erfc(d2 / std::sqrt(2)) / 2 - S * std::erfc(d1 / std::sqrt(2)) / 2;
+    }
+}
+
+double implied_volatility(double S, double K, double T, double r, int N, const std::string& option_type, double market_price, double tol = 1e-6, int max_iter = 50) {
+    double sigma = 0.5;  // Initial guess
     for (int i = 0; i < max_iter; ++i) {
-        double sigma = (sigma_low + sigma_high) / 2;
-        double option_price = binomial_tree_american_option(S, K, T, r, sigma, N, option_type);
+        double price = binomial_tree_american_option(S, K, T, r, sigma, N, option_type);
+        double vega = (black_scholes_price(S, K, T, r, sigma + 0.01, option_type) - 
+                       black_scholes_price(S, K, T, r, sigma - 0.01, option_type)) / 0.02;
         
-        if (std::abs(option_price - market_price) < tol) {
+        double diff = price - market_price;
+        if (std::abs(diff) < tol) {
             return sigma;
-        } else if (option_price < market_price) {
-            sigma_low = sigma;
-        } else {
-            sigma_high = sigma;
+        }
+        
+        sigma -= diff / vega;
+        if (sigma <= 0.0001 || sigma > 1000) {
+            return std::numeric_limits<double>::quiet_NaN();
         }
     }
     
-    return (sigma_low + sigma_high) / 2;
+    return std::numeric_limits<double>::quiet_NaN();
 }
 
 struct OptionData {
@@ -175,10 +193,8 @@ void write_to_csv(const std::string& filename, const std::vector<OptionData>& op
         return;
     }
 
-    // Write header
     outfile << "Contract,Strike,Underlying,TimeToExpiry,MarketPrice,ImpliedVolatility\n";
 
-    // Write data
     for (size_t i = 0; i < options.size(); ++i) {
         const auto& option = options[i];
         outfile << option.option_type << ","
@@ -195,10 +211,9 @@ void write_to_csv(const std::string& filename, const std::vector<OptionData>& op
 
 void calculate_implied_volatilities(const std::string& input_filename, const std::string& output_filename, double r, int N) {
     std::vector<OptionData> options = read_csv(input_filename);
-    std::vector<std::future<double>> implied_vol_futures;
+    std::vector<double> implied_vols(options.size(), 0.0);
     
-    // Create a thread pool with the number of hardware threads available
-    ThreadPool pool(std::thread::hardware_concurrency());
+    ThreadPool pool(std::thread::hardware_concurrency() - 1);
 
     std::cout << "Calculating Implied Volatilities..." << std::endl;
     
@@ -206,11 +221,11 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
     std::atomic<size_t> completed_calculations(0);
     std::atomic<bool> calculation_complete(false);
     size_t total_calculations = options.size();
+    const size_t BATCH_SIZE = 1000;  // Adjust based on your system
 
     // Start a thread to print progress
     std::thread progress_thread([&]() {
         auto next_print_time = start_time;
-        size_t last_completed = 0;
         while (!calculation_complete) {
             next_print_time += std::chrono::seconds(1);
             std::this_thread::sleep_until(next_print_time);
@@ -228,27 +243,27 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
                       << " | Left: " << calculations_left
                       << " | Estimated time left: " << std::setprecision(1) << estimated_time_left << " seconds" 
                       << std::endl;
-            
-            last_completed = current_completed;
         }
     });
 
-    for (const auto& option : options) {
-        implied_vol_futures.emplace_back(
-            pool.enqueue([&option, r, N, &completed_calculations]() {
-                double result = implied_volatility(
+    std::vector<std::future<void>> futures;
+
+    for (size_t i = 0; i < options.size(); i += BATCH_SIZE) {
+        size_t end = std::min(i + BATCH_SIZE, options.size());
+        futures.push_back(pool.enqueue([&, i, end]() {
+            for (size_t j = i; j < end; ++j) {
+                const auto& option = options[j];
+                implied_vols[j] = implied_volatility(
                     option.underlying_price, option.strike_price, option.years_to_expiration,
                     r, N, option.option_type, option.market_price
                 );
-                completed_calculations++;
-                return result;
-            })
-        );
+                completed_calculations.fetch_add(1, std::memory_order_relaxed);
+            }
+        }));
     }
 
-    std::vector<double> implied_vols;
-    for (auto& future : implied_vol_futures) {
-        implied_vols.push_back(future.get());
+    for (auto& future : futures) {
+        future.get();
     }
 
     calculation_complete = true;
@@ -271,7 +286,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
 int main() {
     std::string input_filename = "/home/qhawkins/Desktop/GMEStudy/timed_opra_clean.csv";
     std::string output_filename = "/home/qhawkins/Desktop/GMEStudy/implied_volatilities.csv";
-    double r = 0.05;    // Risk-free interest rate
+    double r = 0.0425;    // Risk-free interest rate
     int N = 100;        // Number of time steps
 
     calculate_implied_volatilities(input_filename, output_filename, r, N);
