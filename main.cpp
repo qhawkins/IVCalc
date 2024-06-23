@@ -106,14 +106,14 @@ double binomial_tree_american_option(double S, double K, double T, double r, dou
     return option_values[0][0];
 }
 
-double implied_volatility(double S, double K, double T, double r, int N, const std::string& option_type, double market_price, double tol = 1e-6, int max_iter = 100) {
+double implied_volatility(double S, double K, double T, double r, int N, const std::string& option_type, double market_price, double tol = 1e-8, int max_iter = 250) {
     auto f = [&](double sigma) {
         return binomial_tree_american_option(S, K, T, r, sigma, N, option_type) - market_price;
     };
 
     // Initial guess
     double a = 0.00001;
-    double b = 10.0;
+    double b = 100.0;
     double fa = f(a);
     double fb = f(b);
 
@@ -218,7 +218,7 @@ std::vector<OptionData> read_csv(const std::string& filename) {
             tokens.push_back(token);
         }
 
-        if (tokens.size() == 5) {
+        if (tokens.size() == 10) {
             try {
                 option.market_price = std::stod(tokens[0]);
                 option.strike_price = std::stod(tokens[1]);
