@@ -1,3 +1,4 @@
+// Required headers for the program
 #include <iostream>
 #include <cmath>
 #include <vector>
@@ -18,11 +19,22 @@
 #include <limits>
 #include <random>
 
+/**
+ * ThreadPool class for managing a pool of worker threads.
+ * This class allows for efficient distribution of tasks across multiple threads.
+ */
 class ThreadPool {
 public:
+    /**
+     * Constructor: Initializes the thread pool with a specified number of threads.
+     * 
+     * @param num_threads The number of worker threads to create.
+     */
     ThreadPool(size_t num_threads) : stop(false) {
+        // Create worker threads
         for(size_t i = 0; i < num_threads; ++i)
             workers.emplace_back([this] {
+                // Worker thread function
                 while(true) {
                     std::function<void()> task;
                     {
@@ -37,6 +49,12 @@ public:
             });
     }
 
+    /**
+     * Enqueues a task to be executed by a worker thread.
+     * 
+     * @param f The task (function) to be executed.
+     * @return A future representing the eventual result of the task.
+     */
     template<class F>
     auto enqueue(F&& f) -> std::future<typename std::result_of<F()>::type> {
         using return_type = typename std::result_of<F()>::type;
@@ -50,6 +68,9 @@ public:
         return res;
     }
 
+    /**
+     * Destructor: Stops all worker threads and waits for them to finish.
+     */
     ~ThreadPool() {
         {
             std::unique_lock<std::mutex> lock(queue_mutex);
@@ -68,8 +89,21 @@ private:
     bool stop;
 };
 
-constexpr int MAX_N = 100;  // Maximum number of time steps
+// Maximum number of time steps for binomial tree calculation
+constexpr int MAX_N = 100;
 
+/**
+ * Calculates the price of an American option using the binomial tree model.
+ * 
+ * @param S The current price of the underlying asset.
+ * @param K The strike price of the option.
+ * @param T The time to expiration in years.
+ * @param r The risk-free interest rate.
+ * @param sigma The volatility of the underlying asset.
+ * @param N The number of time steps in the binomial tree.
+ * @param option_type The type of option ("call" or "put").
+ * @return The calculated price of the American option.
+ */
 double binomial_tree_american_option(double S, double K, double T, double r, double sigma, int N, const std::string& option_type) {
     double dt = T / N;
     double u = std::exp(sigma * std::sqrt(dt));
@@ -106,6 +140,20 @@ double binomial_tree_american_option(double S, double K, double T, double r, dou
     return option_values[0][0];
 }
 
+/**
+ * Calculates the implied volatility of an option using the Brent's method.
+ * 
+ * @param S The current price of the underlying asset.
+ * @param K The strike price of the option.
+ * @param T The time to expiration in years.
+ * @param r The risk-free interest rate.
+ * @param N The number of time steps in the binomial tree.
+ * @param option_type The type of option ("call" or "put").
+ * @param market_price The observed market price of the option.
+ * @param tol The tolerance for the root-finding algorithm (default: 1e-8).
+ * @param max_iter The maximum number of iterations for the algorithm (default: 250).
+ * @return The calculated implied volatility, or a negative value if the calculation fails.
+ */
 double implied_volatility(double S, double K, double T, double r, int N, const std::string& option_type, double market_price, double tol = 1e-8, int max_iter = 250) {
     auto f = [&](double sigma) {
         return binomial_tree_american_option(S, K, T, r, sigma, N, option_type) - market_price;
@@ -190,6 +238,9 @@ double implied_volatility(double S, double K, double T, double r, int N, const s
     return -2;  // Max iterations reached
 }
 
+/**
+ * Struct to hold option data read from CSV file.
+ */
 struct OptionData {
     double market_price;
     double strike_price;
@@ -198,6 +249,12 @@ struct OptionData {
     std::string option_type;
 };
 
+/**
+ * Reads option data from a CSV file.
+ * 
+ * @param filename The name of the CSV file to read.
+ * @return A vector of OptionData structs containing the read data.
+ */
 std::vector<OptionData> read_csv(const std::string& filename) {
     std::vector<OptionData> options;
     std::ifstream file(filename);
@@ -239,6 +296,13 @@ std::vector<OptionData> read_csv(const std::string& filename) {
     return options;
 }
 
+/**
+ * Writes the calculated implied volatilities to a CSV file.
+ * 
+ * @param filename The name of the output CSV file.
+ * @param options A vector of OptionData structs containing the option information.
+ * @param implied_vols A vector of calculated implied volatilities.
+ */
 void write_to_csv(const std::string& filename, const std::vector<OptionData>& options, const std::vector<double>& implied_vols) {
     std::ofstream outfile(filename);
     if (!outfile.is_open()) {
@@ -262,6 +326,14 @@ void write_to_csv(const std::string& filename, const std::vector<OptionData>& op
     std::cout << "Results written to " << filename << std::endl;
 }
 
+/**
+ * Calculates implied volatilities for a set of options using multi-threading.
+ * 
+ * @param input_filename The name of the input CSV file containing option data.
+ * @param output_filename The name of the output CSV file to write results.
+ * @param r The risk-free interest rate.
+ * @param N The number of time steps for the binomial tree model.
+ */
 void calculate_implied_volatilities(const std::string& input_filename, const std::string& output_filename, double r, int N) {
     std::vector<OptionData> options = read_csv(input_filename);
     std::vector<double> implied_vols(options.size(), 0.0);
@@ -291,7 +363,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
             auto current_time = std::chrono::steady_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
             size_t current_completed = completed_calculations.load();
-            double calculations_per_second = current_completed / (duration.count() / 1000.0);
+	    double calculations_per_second = current_completed / (duration.count() / 1000.0);
             
             size_t calculations_left = total_calculations - current_completed;
             double estimated_time_left = calculations_per_second > 0 ? calculations_left / calculations_per_second : 0;
@@ -313,6 +385,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
     std::mt19937 gen(rd());
     std::uniform_int_distribution<> dis(0, options.size() - 1);
 
+    // Process options in batches
     for (size_t i = 0; i < options.size(); i += BATCH_SIZE) {
         size_t end = std::min(i + BATCH_SIZE, options.size());
         futures.push_back(pool.enqueue([&, i, end]() {
@@ -355,6 +428,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
                     continue;
                 }
 
+                // Calculate implied volatility
                 double iv = implied_volatility(
                     option.underlying_price, option.strike_price, option.years_to_expiration,
                     r, N, option.option_type, option.market_price
@@ -372,6 +446,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
                               << ", Calculated IV: " << iv << std::endl;
                 }
 
+                // Handle calculation results
                 if (iv == -1) {
                     std::lock_guard<std::mutex> lock(cout_mutex);
                     std::cout << "Root not bracketed for option " << j << ":\n"
@@ -396,10 +471,12 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
                 completed_calculations.fetch_add(1, std::memory_order_relaxed);
             }
 
+            // Update global counters
             nan_count.fetch_add(local_nan_count, std::memory_order_relaxed);
             root_not_bracketed_count.fetch_add(local_root_not_bracketed_count, std::memory_order_relaxed);
             max_iterations_reached_count.fetch_add(local_max_iterations_reached_count, std::memory_order_relaxed);
             
+            // Calculate and print batch statistics
             double avg_iv = valid_iv_count > 0 ? sum_iv / valid_iv_count : 0.0;
 
             std::lock_guard<std::mutex> lock(cout_mutex);
@@ -412,6 +489,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
         }));
     }
 
+    // Wait for all calculations to complete
     for (auto& future : futures) {
         future.get();
     }
@@ -419,6 +497,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
     calculation_complete = true;
     progress_thread.join();
 
+    // Calculate and print overall statistics
     auto end_time = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     
@@ -436,6 +515,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
     }
     double overall_avg_iv = valid_iv_count > 0 ? sum_iv / valid_iv_count : 0.0;
 
+    // Print final statistics
     std::cout << "\nCalculations completed." << std::endl;
     std::cout << "Total time: " << std::fixed << std::setprecision(2) << seconds << " seconds" << std::endl;
     std::cout << "Number of calculations: " << total_calculations << std::endl;
@@ -445,9 +525,16 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
     std::cout << "Total max iterations reached count: " << max_iterations_reached_count.load() << std::endl;
     std::cout << "Overall average IV: " << std::fixed << std::setprecision(4) << overall_avg_iv << std::endl;
 
+    // Write results to CSV file
     write_to_csv(output_filename, options, implied_vols);
 }
 
+/**
+ * Main function: Entry point of the program.
+ * Sets up input/output filenames and parameters, then calls the calculate_implied_volatilities function.
+ * 
+ * @return 0 on successful execution.
+ */
 int main() {
     std::string input_filename = "/home/qhawkins/Desktop/GMEStudy/timed_opra_clean.csv";
     std::string output_filename = "/home/qhawkins/Desktop/GMEStudy/implied_volatilities.csv";
