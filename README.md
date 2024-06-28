@@ -33,28 +33,6 @@ The program implements the binomial tree model for American options pricing and 
 - CMake 3.10 or later (for building)
 - A C++ compiler supporting C++11 features (e.g., GCC, Clang, MSVC)
 
-## Installation
-
-1. Clone the repository:
-   ```
-   git clone https://github.com/yourusername/implied-volatility-calculator.git
-   cd implied-volatility-calculator
-   ```
-
-2. Create a build directory and navigate to it:
-   ```
-   mkdir build
-   cd build
-   ```
-
-3. Run CMake and build the project:
-   ```
-   cmake ..
-   make
-   ```
-
-4. The executable `implied_volatility_calculator` will be created in the `build` directory.
-
 ## Usage
 
 1. Prepare your input CSV file with the following columns:
@@ -75,7 +53,7 @@ The program implements the binomial tree model for American options pricing and 
 
 3. Run the program:
    ```
-   ./implied_volatility_calculator
+   ./main
    ```
 
 4. The program will display progress information and write the results to the specified output CSV file.
