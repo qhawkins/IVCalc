@@ -17,6 +17,8 @@ The Implied Volatility Calculator is a high-performance C++ program designed to 
 
 The program implements the binomial tree model for American options pricing and uses Brent's method for root-finding to calculate implied volatilities. It's designed to handle various edge cases and provide detailed progress information during the calculation process.
 
+YouTube video showcasing the functionality of this program: https://youtu.be/CueF89mmzGE
+
 ## Features
 
 - Fast, multi-threaded calculation of implied volatilities
