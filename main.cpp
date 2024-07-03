@@ -271,17 +271,19 @@ std::vector<OptionData> read_csv(const std::string& filename) {
         std::string token;
         std::vector<std::string> tokens;
 
-        while (std::getline(iss, token, ',')) {
+        while (std::getline(iss, token, ',')) {x
             tokens.push_back(token);
         }
 
-        if (tokens.size() == 10) {
+        std::vector<std::string> new_tokens(tokens.begin() + 1, tokens.end());
+
+        if (new_tokens.size() == 15) {
             try {
-                option.market_price = std::stod(tokens[0]);
-                option.strike_price = std::stod(tokens[1]);
-                option.underlying_price = std::stod(tokens[2]);
-                option.years_to_expiration = std::stod(tokens[3]);
-                char contract_type = tokens[4][0];
+                option.market_price = std::stod(new_tokens[0]);
+                option.strike_price = std::stod(new_tokens[1]);
+                option.underlying_price = std::stod(new_tokens[2]);
+                option.years_to_expiration = std::stod(new_tokens[3]);
+                char contract_type = new_tokens[4][0];
                 option.option_type = (contract_type == 'C' || contract_type == 'c') ? "call" : "put";
                 options.push_back(option);
             } catch (const std::exception& e) {
