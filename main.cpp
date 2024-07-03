@@ -272,10 +272,15 @@ std::vector<OptionData> read_csv(const std::string& filename) {
         std::vector<std::string> tokens;
 
         while (std::getline(iss, token, ',')) {
+            //skip the first line
+            if (token == "Contract") {
+                break;
+            }
             tokens.push_back(token);
         }
 
-        if (tokens.size() == 10) {
+        
+        if (tokens.size() == 17) {
             try {
                 option.market_price = std::stod(tokens[0]);
                 option.strike_price = std::stod(tokens[1]);
@@ -289,6 +294,9 @@ std::vector<OptionData> read_csv(const std::string& filename) {
             }
         } else {
             std::cerr << "Error parsing line: " << line << " - Incorrect number of fields" << std::endl;
+            std::cout << tokens.size();
+            exit(1938);
+
         }
     }
 
