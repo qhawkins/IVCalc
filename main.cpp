@@ -356,7 +356,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
     std::atomic<size_t> root_not_bracketed_count(0);
     std::atomic<size_t> max_iterations_reached_count(0);
     size_t total_calculations = options.size();
-    const size_t BATCH_SIZE = 1000;  // Adjust based on your system
+    const size_t BATCH_SIZE = 5000;  // Adjust based on your system
 
     std::mutex cout_mutex;
 
@@ -370,7 +370,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
             auto current_time = std::chrono::steady_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
             size_t current_completed = completed_calculations.load();
-	    double calculations_per_second = current_completed / (duration.count() / 1000.0);
+	        double calculations_per_second = current_completed / (duration.count() / 1000.0);
             
             size_t calculations_left = total_calculations - current_completed;
             double estimated_time_left = calculations_per_second > 0 ? calculations_left / calculations_per_second : 0;
