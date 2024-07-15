@@ -246,6 +246,7 @@ struct OptionData {
     double strike_price;
     double underlying_price;
     double years_to_expiration;
+    double rfr;
     std::string option_type;
 };
 
@@ -280,12 +281,13 @@ std::vector<OptionData> read_csv(const std::string& filename) {
         }
 
         
-        if (tokens.size() == 17) {
+        if (tokens.size() == 18) {
             try {
                 option.market_price = std::stod(tokens[0]);
                 option.strike_price = std::stod(tokens[1]);
                 option.underlying_price = std::stod(tokens[2]);
                 option.years_to_expiration = std::stod(tokens[3]);
+                option.rfr = std::stod(tokens[17]);
                 char contract_type = tokens[4][0];
                 option.option_type = (contract_type == 'C' || contract_type == 'c') ? "call" : "put";
                 options.push_back(option);
@@ -341,7 +343,7 @@ void write_to_csv(const std::string& filename, const std::vector<OptionData>& op
  * @param r The risk-free interest rate.
  * @param N The number of time steps for the binomial tree model.
  */
-void calculate_implied_volatilities(const std::string& input_filename, const std::string& output_filename, double r, int N) {
+void calculate_implied_volatilities(const std::string& input_filename, const std::string& output_filename, int N) {
     std::vector<OptionData> options = read_csv(input_filename);
     std::vector<double> implied_vols(options.size(), 0.0);
     
@@ -429,8 +431,8 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
                     continue;
                 }
                 if (option.option_type == "call" && option.market_price > option.underlying_price) {
-                    implied_vols[j] = 5.0;
-                    sum_iv += 5.0;
+                    implied_vols[j] = 10.0;
+                    sum_iv += 10.0;
                     valid_iv_count++;
                     continue;
                 }
@@ -438,7 +440,7 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
                 // Calculate implied volatility
                 double iv = implied_volatility(
                     option.underlying_price, option.strike_price, option.years_to_expiration,
-                    r, N, option.option_type, option.market_price
+                    option.rfr, N, option.option_type, option.market_price
                 );
 
                 // Print detailed information for a random sample of options
@@ -545,10 +547,9 @@ void calculate_implied_volatilities(const std::string& input_filename, const std
 int main() {
     std::string input_filename = "/home/qhawkins/Desktop/GMEStudy/timed_opra_clean.csv";
     std::string output_filename = "/home/qhawkins/Desktop/GMEStudy/implied_volatilities.csv";
-    double r = 0.0425;    // Risk-free interest rate
     int N = 100;        // Number of time steps
 
-    calculate_implied_volatilities(input_filename, output_filename, r, N);
+    calculate_implied_volatilities(input_filename, output_filename, N);
 
     return 0;
 }
